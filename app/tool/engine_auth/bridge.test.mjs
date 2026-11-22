@@ -232,6 +232,7 @@ test('open → done: browser callback, then the route is declared and list shows
     providers: [
       { id: 'openai-codex', signedIn: true, account: 'tester@example.invalid' },
       { id: 'anthropic', signedIn: false },
+      { id: 'google-antigravity', signedIn: false },
     ],
   })
   assert.equal(settings.mutations.length, 1, 'list does not re-declare an existing route')
@@ -426,6 +427,7 @@ test('signOut removes the bridge route and the grant, keeps a user API-key route
     providers: [
       { id: 'openai-codex', signedIn: false },
       { id: 'anthropic', signedIn: false },
+      { id: 'google-antigravity', signedIn: false },
     ],
   })
 })
@@ -447,7 +449,7 @@ test('signOut leaves a route declared by a lower layer, cancels a live attempt, 
 
 test('list repairs a missing route for a stored grant and never declares one without it', async () => {
   const { bridge, credentials, settings } = setup()
-  assert.deepEqual((await bridge.list()).providers.map((p) => p.signedIn), [false, false])
+  assert.deepEqual((await bridge.list()).providers.map((p) => p.signedIn), [false, false, false])
   assert.equal(settings.mutations.length, 0)
   credentials.records.set('llm-pi-ai/anthropic', { kind: 'grant', payload: { type: 'oauth', access: 'opaque' } })
   const { providers } = await bridge.list()
