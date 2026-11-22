@@ -1,0 +1,181 @@
+name: Release APK (AOSP testkey)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (defaults to v<pubspec version>)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.47.7
+  NODE_VERSION: 24.22.1
+  GRADLE_VERSION: 9.3.1
+  DSH_MAVEN_MIRRORS: 0
+  TZ: Asia/Shanghai
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Restore runtime download cache
+        id: runtime-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: runtime/.cache
+          key: runtime-downloads-v1-${{ hashFiles('runtime/build-runtime.sh', 'runtime/locks/**') }}
+          restore-keys: runtime-downloads-v1-
+
+      - name: Build arm64 runtime
+        run: |
+          runtime/build-runtime.sh arm64-v8a
+          python3 -I tooling/check_runtime_bundle.py arm64
+
+      - name: Save runtime download cache
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: runtime/.cache
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+
+      - name: Ensure pinned Android NDK and Flutter project config
+        run: |
+          ndk_ver="$(python3 -c 'import json; print(json.load(open("runtime/tawcroot/source.json"))["ndkVersion"])')"
+          sdk="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [[ ! -d "$sdk/ndk/$ndk_ver" ]]; then
+            sdkmanager="$(command -v sdkmanager || find "$sdk/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1 || true)"
+            test -n "$sdkmanager"
+            yes | "$sdkmanager" "ndk;$ndk_ver" >/dev/null
+          fi
+          (cd app && flutter pub get --enforce-lockfile)
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$sdk" "$FLUTTER_ROOT" > app/android/local.properties
+
+      - name: Prepare AOSP testkey keystore
+        run: |
+          set -euo pipefail
+          pem="$RUNNER_TEMP/testkey.x509.pem"
+          pk8="$RUNNER_TEMP/testkey.pk8"
+          fetch_aosp() {
+            local file="$1" out="$2"
+            if curl -fsSL "https://android.googlesource.com/platform/build/+/refs/heads/main/target/product/security/${file}?format=TEXT" \
+              | base64 -d > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+              return 0
+            fi
+            curl -fsSL "https://raw.githubusercontent.com/aosp-mirror/platform_build/master/target/product/security/${file}" -o "$out"
+          }
+          fetch_aosp testkey.x509.pem "$pem"
+          fetch_aosp testkey.pk8 "$pk8"
+
+          fp="$(openssl x509 -in "$pem" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr '[:upper:]' '[:lower:]')"
+          expected_fp="a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc"
+          if [[ "$fp" != "$expected_fp" ]]; then
+            echo "Unexpected AOSP testkey SHA-256 fingerprint: $fp (expected $expected_fp)" >&2
+            exit 1
+          fi
+
+          key_pem="$RUNNER_TEMP/testkey.key.pem"
+          p12="$RUNNER_TEMP/aosp-testkey.p12"
+          jks="$RUNNER_TEMP/aosp-testkey.jks"
+          openssl pkcs8 -inform DER -nocrypt -in "$pk8" -out "$key_pem"
+          openssl pkcs12 -export \
+            -in "$pem" \
+            -inkey "$key_pem" \
+            -name testkey \
+            -out "$p12" \
+            -passout pass:android
+          keytool -importkeystore -noprompt \
+            -srckeystore "$p12" -srcstoretype PKCS12 -srcstorepass android \
+            -destkeystore "$jks" -deststoretype JKS -deststorepass android -destkeypass android
+
+          cat > app/android/key.properties <<EOF
+          storeFile=$jks
+          storePassword=android
+          keyAlias=testkey
+          keyPassword=android
+          EOF
+
+      - name: Build signed arm64 release APK
+        run: bash tooling/build-apk.sh --no-companion
+
+      - name: Clean temporary signing files
+        if: always()
+        run: rm -f app/android/key.properties "$RUNNER_TEMP"/testkey.* "$RUNNER_TEMP"/aosp-testkey.*
+
+      - name: Verify release APK signature and package assets
+        run: |
+          apk="app/build/app/outputs/flutter-apk/app-arm64-release.apk"
+          sdk="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          apksigner="$(ls -1d "$sdk"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify -v --min-sdk-version 21 --print-certs "$apk"
+          "$apksigner" verify --print-certs "$apk" | grep -qi "a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc"
+
+          python3 tooling/release_assets.py --delta-from 0
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("dist/update.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ.get("INPUT_TAG") or data["tag"]
+          data["tag"] = tag
+          data["page"] = f"https://github.com/{repo}/releases/tag/{tag}"
+          p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dsh-go-release-apk-arm64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version="$(python3 -c 'import re; print(re.search(r"^version:\s*([^+\s]+)", open("app/pubspec.yaml").read(), re.M).group(1))')"
+          tag="${INPUT_TAG:-v$version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/dsh-go-*-arm64.apk dist/SHA256SUMS dist/update.json --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/dsh-go-*-arm64.apk dist/SHA256SUMS dist/update.json \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "DSH Go $version (AOSP testkey)" \
+              --notes "Signed release arm64 APK built from \`$GITHUB_SHA\` with AOSP testkey (\`a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc\`)."
+          fi
