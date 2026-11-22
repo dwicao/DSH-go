@@ -74,11 +74,14 @@ jobs:
         run: |
           ndk_ver="$(python3 -c 'import json; print(json.load(open("runtime/tawcroot/source.json"))["ndkVersion"])')"
           sdk="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          if [[ ! -d "$sdk/ndk/$ndk_ver" ]]; then
+          if [[ ! -f "$sdk/ndk/$ndk_ver/source.properties" ]]; then
             sdkmanager="$(command -v sdkmanager || find "$sdk/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1 || true)"
             test -n "$sdkmanager"
             yes | "$sdkmanager" "ndk;$ndk_ver" >/dev/null
           fi
+          echo "ANDROID_NDK_HOME=$sdk/ndk/$ndk_ver" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$sdk/ndk/$ndk_ver" >> "$GITHUB_ENV"
+          cat "$sdk/ndk/$ndk_ver/source.properties"
           (cd app && flutter pub get --enforce-lockfile)
           printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$sdk" "$FLUTTER_ROOT" > app/android/local.properties
 
