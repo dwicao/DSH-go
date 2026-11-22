@@ -23,6 +23,7 @@ import '../theme/theme.dart';
 String subscriptionLetter(Subscription s) => switch (s) {
   Subscription.chatgpt => 'G',
   Subscription.claude => 'C',
+  Subscription.antigravity => 'A',
 };
 
 /// Opens the sign-in sheet; true once signed in. Closing it cancels the

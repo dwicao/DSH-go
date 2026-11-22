@@ -114,4 +114,35 @@ void main() {
     expect(find.text('已使用 25%'), findsNothing);
     expect(tester.widget<TextButton>(find.widgetWithText(TextButton, '刷新额度')).onPressed, isNotNull);
   });
+
+  testWidgets('Antigravity quota renders without a pi-ai route profile', (tester) async {
+    const antigravityModel = ModelSelection(provider: 'google-antigravity', model: 'gemini-3.1-pro-high');
+    const antigravityUsage = SubscriptionUsage(
+      status: SubscriptionUsageStatus.ok,
+      windows: [
+        SubscriptionUsageWindow(id: 'gemini', usedPercent: 12),
+        SubscriptionUsageWindow(id: 'claude', usedPercent: 40),
+      ],
+    );
+    await tester.pumpWidget(
+      testApp(
+        const Scaffold(
+          body: UsageSheet(sessionId: 's', model: antigravityModel),
+        ),
+        overrides: [
+          sessionUsageProvider.overrideWith2((id) => FakeUsage(id, SessionUsage.empty)),
+          balanceProvider.overrideWith(_FakeBalanceController.new),
+          subscriptionProfileProvider(Subscription.antigravity).overrideWith((ref) async => null),
+          subscriptionUsageProvider(Subscription.antigravity).overrideWith((ref) async => antigravityUsage),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(BalanceCard), findsNothing);
+    expect(find.text('Antigravity · 订阅额度'), findsOneWidget);
+    expect(find.text('Gemini'), findsOneWidget);
+    expect(find.text('Claude'), findsOneWidget);
+    expect(find.text('已使用 12%'), findsOneWidget);
+    expect(find.text('已使用 40%'), findsOneWidget);
+  });
 }

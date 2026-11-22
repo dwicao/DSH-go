@@ -143,6 +143,7 @@ void main() {
     test('a lapsed subscription is recognised by provider', () {
       expect(lapsedSubscription(_lapsed('openai-codex').failure), Subscription.chatgpt);
       expect(lapsedSubscription(_lapsed('anthropic').failure), Subscription.claude);
+      expect(lapsedSubscription(_lapsed('google-antigravity').failure), Subscription.antigravity);
       expect(
         lapsedSubscription(
           const LlmFailure(

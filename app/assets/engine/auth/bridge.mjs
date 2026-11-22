@@ -23,6 +23,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
+import { ANTIGRAVITY_CALLBACK_PORT, ANTIGRAVITY_DISPLAY_NAME, ANTIGRAVITY_PROVIDER_ID, queryAntigravityUsage } from './antigravity.mjs'
 
 /** The subscriptions this bridge signs in to, keyed by pi-ai provider id (= llm-pi-ai route id). */
 export const PROVIDERS = Object.freeze({
@@ -37,6 +38,11 @@ export const PROVIDERS = Object.freeze({
     // pi-ai's Claude login prefers 53692 and falls back to any free port (the
     // redirect URI names the port it got), so a callback is always possible.
     callbackPort: undefined,
+  }),
+  [ANTIGRAVITY_PROVIDER_ID]: Object.freeze({
+    displayName: ANTIGRAVITY_DISPLAY_NAME,
+    callbackPort: ANTIGRAVITY_CALLBACK_PORT,
+    routeMode: 'adapter',
   }),
 })
 
@@ -157,10 +163,15 @@ function jwtClaims(token) {
 
 /**
  * Who is signed in, when the grant says. A ChatGPT access token is a JWT whose
- * claims carry the email and plan; a Claude token is opaque.
+ * claims carry the email and plan; a Google Antigravity grant stores `email`;
+ * a Claude token is opaque.
  */
 export function accountOf(provider, payload) {
-  if (provider !== 'openai-codex' || !isObject(payload)) return undefined
+  if (!isObject(payload)) return undefined
+  if (provider === ANTIGRAVITY_PROVIDER_ID) {
+    return typeof payload.email === 'string' && payload.email.includes('@') ? payload.email : undefined
+  }
+  if (provider !== 'openai-codex') return undefined
   const claims = jwtClaims(payload.access)
   if (!claims) return undefined
   const profile = claims['https://api.openai.com/profile']
@@ -238,6 +249,7 @@ export class AuthBridge {
   #probePort
   #settingsNs
   #fetch
+  #onRouteChange
   #usageFlight = new Map()
   #usageLast = new Map()
   #attempts = new Map()
@@ -254,6 +266,7 @@ export class AuthBridge {
     probePort = portIsFree,
     settingsNs = SETTINGS_NS,
     fetch = globalThis.fetch,
+    onRouteChange = undefined,
   }) {
     this.#get = get
     this.#log = log
@@ -263,6 +276,7 @@ export class AuthBridge {
     this.#probePort = probePort
     this.#settingsNs = settingsNs
     this.#fetch = fetch
+    this.#onRouteChange = onRouteChange
   }
 
   // ── Remote methods ──────────────────────────────────────────────────────
@@ -290,7 +304,7 @@ export class AuthBridge {
       const existing = this.#usageFlight.get(provider)
       if (existing?.access === access) return await existing.promise
       if (existing || this.#now() - (this.#usageLast.get(provider) ?? -Infinity) < 10000) return result('unavailable', 'rate_limited')
-      const promise = this.#queryUsage(provider, access, credentials, result)
+      const promise = this.#queryUsage(provider, access, payload.projectId, credentials, result)
       const flight = { access, promise }
       this.#usageFlight.set(provider, flight)
       try { return await promise } finally {
@@ -301,8 +315,12 @@ export class AuthBridge {
     }
   }
 
-  async #queryUsage(provider, access, credentials, result) {
+  async #queryUsage(provider, access, projectId, credentials, result) {
     try {
+      if (provider === ANTIGRAVITY_PROVIDER_ID) {
+        this.#usageLast.set(provider, this.#now())
+        return await queryAntigravityUsage(access, projectId, this.#fetch)
+      }
       const headers = { Authorization: `Bearer ${access}`, Accept: 'application/json' }
       const url = provider === 'anthropic'
         ? 'https://api.anthropic.com/api/oauth/usage'
@@ -662,6 +680,10 @@ export class AuthBridge {
 
   /** Declares `providers.<id>` (catalog route: only a display name) unless some route already exists. */
   async #ensureRoute(provider) {
+    if (PROVIDERS[provider]?.routeMode === 'adapter') {
+      await this.#onRouteChange?.(provider, true)
+      return true
+    }
     const { settings, section } = this.#section()
     if (isObject(section.value?.providers?.[provider])) return false
     await settings.mutate(this.#settingsNs, [
@@ -677,6 +699,10 @@ export class AuthBridge {
    * route and keeps working without the grant).
    */
   async #removeRoute(provider) {
+    if (PROVIDERS[provider]?.routeMode === 'adapter') {
+      await this.#onRouteChange?.(provider, false)
+      return 'removed'
+    }
     const { settings, section } = this.#section()
     if (!isObject(section.value?.providers?.[provider])) return 'absent'
     const own = section.user?.providers?.[provider]

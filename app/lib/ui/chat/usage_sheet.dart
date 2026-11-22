@@ -206,8 +206,9 @@ class _SubscriptionQuota extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = context.l10n;
-    final profile = ref.watch(subscriptionProfileProvider(subscription));
-    final currentProfile = profile.isLoading || profile.hasError ? null : profile.value;
+    final hasPiAiProfile = subscription != Subscription.antigravity;
+    final profile = hasPiAiProfile ? ref.watch(subscriptionProfileProvider(subscription)) : null;
+    final currentProfile = profile == null || profile.isLoading || profile.hasError ? null : profile.value;
     if (currentProfile != null && !isSubscriptionRoute(currentProfile)) {
       return BalanceCard(title: l10n.activityUsageBalance, margin: margin);
     }
@@ -215,64 +216,67 @@ class _SubscriptionQuota extends ConsumerWidget {
       margin: margin,
       children: [Padding(padding: const EdgeInsets.all(16), child: Text(text))],
     );
-    final body = profile.when(
-      skipLoadingOnRefresh: false,
-      skipLoadingOnReload: false,
-      loading: () => message(l10n.activityQuotaLoading),
-      error: (_, _) => message(l10n.activityQuotaUnavailable),
-      data: (profile) {
-        // A route with an API key is not a subscription, even if named anthropic.
-        if (profile == null) return message(l10n.activityQuotaUnavailable);
-        if (!isSubscriptionRoute(profile)) return const SizedBox.shrink();
-        return ref
-            .watch(subscriptionUsageProvider(subscription))
-            .when(
-              skipLoadingOnRefresh: false,
-              skipLoadingOnReload: false,
-              loading: () => message(l10n.activityQuotaLoading),
-              error: (error, _) => message(
-                error is DshRemoteException &&
-                        (error.code == 'gateway/method-not-found' ||
-                            error.code == 'gateway/not-found' ||
-                            error.code == 'gateway/invocation-unavailable')
-                    ? l10n.activityQuotaUnsupported
-                    : l10n.activityQuotaUnavailable,
-              ),
-              data: (usage) {
-                if (usage == null) return message(l10n.activityQuotaUnavailable);
-                if (usage.status == SubscriptionUsageStatus.unavailable) {
-                  return message(switch (usage.reason) {
-                    'expired' || 'auth_required' => l10n.activityQuotaAuthError,
-                    'permission_denied' => l10n.activityQuotaPermissionDenied,
-                    'network' => l10n.activityQuotaNetworkError,
-                    'rate_limited' => l10n.activityQuotaRateLimited,
-                    _ => l10n.activityQuotaUnavailable,
-                  });
-                }
-                if (usage.status == SubscriptionUsageStatus.unsupported) return message(l10n.activityQuotaUnsupported);
-                if (usage.status == SubscriptionUsageStatus.notSignedIn) return message(l10n.activityQuotaSignedOut);
-                return SheetGroup(
-                  margin: margin,
-                  children: [
-                    for (final window in usage.windows)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(_windowLabel(context, window)),
-                            Text(l10n.activityQuotaUsed(formatPercent(window.usedPercent / 100))),
-                            if (window.resetAt case final reset?) Text(_resetLabel(context, reset)),
-                          ],
-                        ),
-                      ),
-                  ],
-                );
-              },
+    Widget quotaBody() => ref
+        .watch(subscriptionUsageProvider(subscription))
+        .when(
+          skipLoadingOnRefresh: false,
+          skipLoadingOnReload: false,
+          loading: () => message(l10n.activityQuotaLoading),
+          error: (error, _) => message(
+            error is DshRemoteException &&
+                    (error.code == 'gateway/method-not-found' ||
+                        error.code == 'gateway/not-found' ||
+                        error.code == 'gateway/invocation-unavailable')
+                ? l10n.activityQuotaUnsupported
+                : l10n.activityQuotaUnavailable,
+          ),
+          data: (usage) {
+            if (usage == null) return message(l10n.activityQuotaUnavailable);
+            if (usage.status == SubscriptionUsageStatus.unavailable) {
+              return message(switch (usage.reason) {
+                'expired' || 'auth_required' => l10n.activityQuotaAuthError,
+                'permission_denied' => l10n.activityQuotaPermissionDenied,
+                'network' => l10n.activityQuotaNetworkError,
+                'rate_limited' => l10n.activityQuotaRateLimited,
+                _ => l10n.activityQuotaUnavailable,
+              });
+            }
+            if (usage.status == SubscriptionUsageStatus.unsupported) return message(l10n.activityQuotaUnsupported);
+            if (usage.status == SubscriptionUsageStatus.notSignedIn) return message(l10n.activityQuotaSignedOut);
+            return SheetGroup(
+              margin: margin,
+              children: [
+                for (final window in usage.windows)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_windowLabel(context, window)),
+                        Text(l10n.activityQuotaUsed(formatPercent(window.usedPercent / 100))),
+                        if (window.resetAt case final reset?) Text(_resetLabel(context, reset)),
+                      ],
+                    ),
+                  ),
+              ],
             );
-      },
-    );
-    final quota = currentProfile == null ? null : ref.watch(subscriptionUsageProvider(subscription));
+          },
+        );
+    final body = profile == null
+        ? quotaBody()
+        : profile.when(
+            skipLoadingOnRefresh: false,
+            skipLoadingOnReload: false,
+            loading: () => message(l10n.activityQuotaLoading),
+            error: (_, _) => message(l10n.activityQuotaUnavailable),
+            data: (profile) {
+              // A route with an API key is not a subscription, even if named anthropic.
+              if (profile == null) return message(l10n.activityQuotaUnavailable);
+              if (!isSubscriptionRoute(profile)) return const SizedBox.shrink();
+              return quotaBody();
+            },
+          );
+    final quota = !hasPiAiProfile || currentProfile != null ? ref.watch(subscriptionUsageProvider(subscription)) : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -286,10 +290,10 @@ class _SubscriptionQuota extends ConsumerWidget {
           child: Padding(
             padding: margin,
             child: TextButton(
-              onPressed: profile.isLoading || (quota?.isLoading ?? false)
+              onPressed: (profile?.isLoading ?? false) || (quota?.isLoading ?? false)
                   ? null
                   : () {
-                      if (currentProfile == null) {
+                      if (hasPiAiProfile && currentProfile == null) {
                         ref.invalidate(subscriptionProfileProvider(subscription));
                       } else {
                         ref.invalidate(subscriptionUsageProvider(subscription));
@@ -325,6 +329,9 @@ class _SubscriptionQuota extends ConsumerWidget {
       'seven_day' => l10n.activityQuotaSevenDay,
       'seven_day_sonnet' => l10n.activityQuotaSevenDaySonnet,
       'seven_day_opus' => l10n.activityQuotaSevenDayOpus,
+      'gemini' => 'Gemini',
+      'claude' => 'Claude',
+      'gpt_oss' => 'GPT-OSS',
       _ => window.id,
     };
   }

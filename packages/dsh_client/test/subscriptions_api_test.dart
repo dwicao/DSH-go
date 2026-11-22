@@ -117,20 +117,23 @@ void main() {
     test('wire ids are the pi-ai provider ids', () {
       expect(Subscription.chatgpt.wire, 'openai-codex');
       expect(Subscription.claude.wire, 'anthropic');
+      expect(Subscription.antigravity.wire, 'google-antigravity');
       expect(Subscription.fromWire('openai-codex'), Subscription.chatgpt);
       expect(Subscription.fromWire('anthropic'), Subscription.claude);
+      expect(Subscription.fromWire('google-antigravity'), Subscription.antigravity);
       expect(Subscription.fromWire('openai'), isNull);
       expect(Subscription.fromWire(null), isNull);
     });
   });
 
   group('appAuth/list', () {
-    test('both providers, with the account when the grant names one', () async {
+    test('all providers, with the account when the grant names one', () async {
       final carrier = _ScriptedCarrier({
         'appAuth/list': (_) => ok({
           'providers': [
             {'id': 'openai-codex', 'signedIn': true, 'account': 'tester@example.invalid'},
             {'id': 'anthropic', 'signedIn': false},
+            {'id': 'google-antigravity', 'signedIn': true, 'account': 'dev@gmail.com'},
           ],
         }),
       });
@@ -139,11 +142,13 @@ void main() {
       expect(_sent(carrier), [
         ['appAuth/list', <String, Object?>{}],
       ]);
-      expect(list.map((s) => s.subscription), [Subscription.chatgpt, Subscription.claude]);
+      expect(list.map((s) => s.subscription), [Subscription.chatgpt, Subscription.claude, Subscription.antigravity]);
       expect(list[0].signedIn, isTrue);
       expect(list[0].account, 'tester@example.invalid');
       expect(list[1].signedIn, isFalse);
       expect(list[1].account, isNull);
+      expect(list[2].signedIn, isTrue);
+      expect(list[2].account, 'dev@gmail.com');
     });
 
     test('unknown ids, malformed entries and non-true flags are dropped or read as signed out', () async {
@@ -196,6 +201,7 @@ void main() {
       final client = DshClient.withCarrier(carrier);
       expect(await client.beginLogin(Subscription.chatgpt), 'cbf52a89-d780-4f71-a08a-c78446e8c86b');
       expect(await client.beginLogin(Subscription.claude), 'cbf52a89-d780-4f71-a08a-c78446e8c86b');
+      expect(await client.beginLogin(Subscription.antigravity), 'cbf52a89-d780-4f71-a08a-c78446e8c86b');
       expect(_sent(carrier), [
         [
           'appAuth/begin',
@@ -204,6 +210,10 @@ void main() {
         [
           'appAuth/begin',
           {'provider': 'anthropic'},
+        ],
+        [
+          'appAuth/begin',
+          {'provider': 'google-antigravity'},
         ],
       ]);
     });

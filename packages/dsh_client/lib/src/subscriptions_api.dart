@@ -26,7 +26,8 @@ import 'session_api.dart';
 /// A subscription the bridge can sign in to.
 enum Subscription {
   chatgpt('openai-codex'),
-  claude('anthropic');
+  claude('anthropic'),
+  antigravity('google-antigravity');
 
   const Subscription(this.wire);
 

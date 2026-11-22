@@ -31,7 +31,13 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
-import { AuthBridge } from './bridge.mjs'
+import {
+  ANTIGRAVITY_DISPLAY_NAME,
+  ANTIGRAVITY_PROVIDER_ID,
+  createAntigravityAdapter,
+  runAntigravityOAuthFlow,
+} from './antigravity.mjs'
+import { AuthBridge, recordKeyFor } from './bridge.mjs'
 
 /** Where the dsh-app rootfs installs DSH (the `dsh` shim runs this file). */
 const GUEST_DSH_BIN = '/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js'
@@ -56,6 +62,7 @@ async function hostImport(specifier) {
 }
 
 const { TypertRemoteService, Remote, RemoteError } = await hostImport('@deepseek-ai/dsh-typert-protocol')
+const llmPkg = await hostImport('@deepseek-ai/dsh-llm')
 
 /** The Remote methods, by implementation name (= wire method name). */
 const REMOTE_METHODS = ['list', 'usage', 'begin', 'poll', 'answer', 'cancel', 'signOut']
@@ -63,15 +70,86 @@ const markRemoteMethods = []
 
 export default class AppAuth extends TypertRemoteService {
   // credentials: grants are read and deleted here. authorization: the flows
-  // llm-pi-ai registers. settings is optional and looked up per call.
+  // llm-pi-ai registers. settings and llm are optional and looked up per call / inject.
   static inject = ['credentials', 'authorization']
 
   /** @param ctx - plugin context. */
   constructor(ctx) {
     super(ctx, 'appAuth')
     for (const mark of markRemoteMethods) mark.call(this)
-    this.bridge = new AuthBridge({ get: (name) => ctx.get(name), RemoteError })
+
+    const antigravityKey = recordKeyFor(ANTIGRAVITY_PROVIDER_ID)
+    if (ctx.authorization.describe(antigravityKey) === undefined) {
+      ctx.authorization.registerFlow({
+        key: antigravityKey,
+        label: ANTIGRAVITY_DISPLAY_NAME,
+        methods: [{ id: 'oauth', label: 'Sign in with Google' }],
+        run: (session) => runAntigravityOAuthFlow(session),
+      })
+    }
+
+    let syncAntigravity = () => {}
+    let desiredAntigravity
+
+    this.bridge = new AuthBridge({
+      get: (name) => ctx.get(name),
+      RemoteError,
+      onRouteChange: (provider, active) => {
+        if (provider === ANTIGRAVITY_PROVIDER_ID) {
+          desiredAntigravity = active
+          syncAntigravity(active)
+        }
+      },
+    })
     ctx.effect(() => () => this.bridge.dispose(), 'appAuth: sign-in attempts')
+
+    ctx.inject(['llm'], (child) => {
+      const AntigravityAdapter = createAntigravityAdapter({
+        LlmAdapter: llmPkg.LlmAdapter,
+        LlmError: llmPkg.LlmError,
+        llmHelpers: llmPkg,
+        getCredentials: () => ctx.get('credentials'),
+        getAttachments: () => ctx.get('attachments'),
+        getFs: () => ctx.get('fs'),
+        recordKey: antigravityKey,
+      })
+      const adapter = new AntigravityAdapter()
+      let registration
+      let disposed = false
+
+      syncAntigravity = (active) => {
+        if (disposed) return
+        if (active) {
+          if (registration === undefined) {
+            registration = child.llm.registerAdapter([ANTIGRAVITY_PROVIDER_ID], adapter)
+          }
+        } else if (registration !== undefined) {
+          registration()
+          registration = undefined
+        }
+      }
+
+      child.effect(() => () => {
+        disposed = true
+        syncAntigravity = () => {}
+        if (registration !== undefined) {
+          registration()
+          registration = undefined
+        }
+      }, 'appAuth: antigravity adapter')
+
+      if (desiredAntigravity !== undefined) {
+        syncAntigravity(desiredAntigravity)
+      } else {
+        Promise.resolve(ctx.credentials.readRecord(antigravityKey))
+          .then((record) => {
+            if (!disposed && desiredAntigravity === undefined && record?.kind === 'grant') {
+              syncAntigravity(true)
+            }
+          })
+          .catch(() => {})
+      }
+    })
   }
 
   list() {

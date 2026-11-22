@@ -155,9 +155,12 @@ void main() {
         const ProvidersPage(),
         providerOverrides(FakeProviderBackend(), subscriptions: FakeSubscriptionBackend()),
       );
-      final row = tester.getRect(find.widgetWithText(ListPageRow, 'Claude'));
+      expect(find.text('Antigravity'), findsOneWidget);
+      expect(find.text('A'), findsOneWidget);
+      final claudeRow = find.widgetWithText(ListPageRow, 'Claude');
+      final row = tester.getRect(claudeRow);
       final card = tester.getRect(find.ancestor(of: find.text('Claude'), matching: find.byType(Material)).first);
-      final capsule = tester.getRect(find.widgetWithText(FilledButton, '登录').last);
+      final capsule = tester.getRect(find.descendant(of: claudeRow, matching: find.widgetWithText(FilledButton, '登录')));
       expect(card.right - capsule.right, moreOrLessEquals(16, epsilon: 0.6));
       expect(capsule.center.dy, moreOrLessEquals(row.center.dy, epsilon: 0.6));
       expect(capsule.height, moreOrLessEquals(LoginCapsule.height, epsilon: 0.6));
